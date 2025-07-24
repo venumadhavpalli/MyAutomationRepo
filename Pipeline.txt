@@ -1,0 +1,205 @@
+pipeline {
+    agent {
+        node {
+            label "${NODE}"
+            customWorkspace "${env.JOB_NAME}/${env.BUILD_NUMBER}"
+        }
+    }
+
+    stages {
+        stage('Setup') {
+            steps {
+                script {
+                    echo "${WORKSPACE}"
+                    dir("${WORKSPACE}") {
+                        retry(3) {
+                      git branch: 'master', credentialsId: 'fafmw-cred', url: 'https://test-fafmw_in%40oracle.com@alm.oraclecorp.com/paasqa/s/paasqa_fmw_26257/scm/fa-fmw-mats.git'
+                      }
+                    }
+                }
+            }
+        }
+        stage('localrepo') {
+            steps {
+        	    script {
+
+            	    try {
+                        cmd = "mkdir ${WORKSPACE}/localrepo"
+        			    status = sh(script: cmd, returnStdout: true).trim()
+        			    echo status
+                    }
+                    catch (ex) {
+                    	echo ex
+                        exit 1
+                    }
+                     dir("${WORKSPACE}/localrepo") {
+                        retry(3) {
+                            git branch: 'stage_12c_develop', url: 'https://saas-soa-qa_in%40oracle.com:On-prem-qa-123*@alm.oraclecorp.com/soa-di/s/soa-di_saas-soa-qa_13548/scm/FA_UI_AUTOMATION.git'
+                        }
+                    }
+        	    }
+            }
+        }
+        stage('BPM-MATS-bpm_testlogic') {
+            steps {
+        	    script {
+            	    try {
+            	        cmd = " sh ${WORKSPACE}/scripts/FA_BPM.sh"
+            		    status = sh(script: cmd, returnStdout: true).trim()
+                        echo status
+                        sleep 2
+                    }
+                    catch (ex) {
+                    	echo ex
+                        exit 1
+                    }
+        	    }
+            }
+        }
+
+    stage('emailNotifcatoin') {
+            steps {
+        	    script {
+            	    try {
+            	        notifyCmd = "sh ${WORKSPACE}/common/emailNotification.sh BPM"
+            	        runStatus = sh(script: notifyCmd, returnStdout: true).trim()
+            	        echo runStatus
+
+                    }
+                    catch (ex) {
+                    	echo ex
+                        exit 1
+                    }
+        	    }
+            }
+    }
+    }
+    post {
+         always {
+            script {
+                def dataList = printFinishedStageDurations()
+ 
+                for (String data in dataList) {
+ 
+                    def stageInfo = data.split(":")
+                    String stageName = stageInfo[0]
+                    def startTime = stageInfo[1]
+                    def endTime = stageInfo[2]
+                    def duration = stageInfo[3]
+ 
+                    try {
+                        cmd = "sh ${WORKSPACE}/utils/executionTime.sh ${stageName} ${startTime} ${endTime} ${duration} ${QUALIFIER}"
+                        status = sh(script: cmd, returnStdout: true).trim()
+                        echo status
+                    }
+                    catch (ex) {
+                        echo ex
+                    }
+                }
+            }
+         }    
+         failure {
+            script {
+                echo "failed"
+                mail bcc: '',
+                body: 'Current Pipeline MATS Test test run Failed , Please take a look ',
+                cc: '',
+                from: 'venkateswara.addala@oracle.com',
+                replyTo: '',
+                subject: 'FA-FMW pipeline run Failed',
+                to: 'venkateswara.addala@oracle.com'
+            }
+        }
+        success {
+            script {
+                echo "success"
+                mail bcc: '',
+                body: 'Current Pipeline MATS Test test run Successful.${BUILD}',
+                cc: '',
+                from: 'venkateswara.addala@oracle.com',
+                replyTo: '',
+                subject: 'FA-FMW pipeline run Successful',
+                to: 'venkateswara.addala@oracle.com'
+            }
+        }
+        aborted {
+            script {
+                echo "aborted"
+                mail bcc: '',
+                body: 'Current Pipeline MATS Test test run Aborted. Please take a look',
+                cc: '',
+                from: 'venkateswara.addala@oracle.com',
+                replyTo: '',
+                subject: 'FA-FMW pipeline run Aborted',
+                to: 'venkateswara.addala@oracle.com'
+
+            }
+        }
+    }            
+}
+@NonCPS
+def printFinishedStageDurations() {
+    def visitor = new PipelineNodeGraphVisitor( currentBuild.rawBuild )
+ 
+    // To find branches instead, replace NodeType.STAGE by NodeType.PARALLEL
+    def stages = visitor.pipelineNodes.findAll{ it.type == FlowNodeWrapper.NodeType.STAGE }
+    String data = ""
+    def dataList = []
+    for( stage in stages ) {
+        if( stage.node.endNode ) {   // only finished stages have endNode
+            def startTime  = TimingAction.getStartTime( stage.node )
+            def endTime    = TimingAction.getStartTime( stage.node.endNode )
+            def duration   = endTime - startTime
+            data = stage.displayName + ":" + startTime + ":" + endTime + ":" + duration
+            echo "$data"
+            dataList.add(data)
+        }
+    }
+    return dataList
+}
+
+
+// see https://dzone.com/refcardz/continuous-delivery-with-jenkins-workflow for tutorial
+// see https://documentation.cloudbees.com/docs/cookbook/_pipeline_dsl_keywords.html for dsl reference
+// This Jenkinsfile should simulate a minimal Jenkins pipeline and can serve as a starting point.
+// NOTE: sleep commands are solelely inserted for the purpose of simulating long running tasks when you run the pipeline
+node {
+   // Mark the code checkout 'stage'....
+   stage 'checkout'
+
+   // Get some code from a GitHub repository
+   git url: 'https://github.com/kesselborn/jenkinsfile'
+   sh 'git clean -fdx; sleep 4;'
+
+   // Get the maven tool.
+   // ** NOTE: This 'mvn' maven tool must be configured
+   // **       in the global configuration.
+   def mvnHome = tool 'mvn'
+
+   stage 'build'
+   // set the version of the build artifact to the Jenkins BUILD_NUMBER so you can
+   // map artifacts to Jenkins builds
+   sh "${mvnHome}/bin/mvn versions:set -DnewVersion=${env.BUILD_NUMBER}"
+   sh "${mvnHome}/bin/mvn package"
+
+   stage 'test'
+   parallel 'test': {
+     sh "${mvnHome}/bin/mvn test; sleep 2;"
+   }, 'verify': {
+     sh "${mvnHome}/bin/mvn verify; sleep 3"
+   }
+
+   stage 'archive'
+   archive 'target/*.jar'
+}
+
+
+node {
+   stage 'deploy Canary'
+   sh 'echo "write your deploy code here"; sleep 5;'
+
+   stage 'deploy Production'
+   input 'Proceed?'
+   sh 'echo "write your deploy code here"; sleep 6;'
+   archive 'target/*.jar'
+}
